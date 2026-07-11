@@ -1,0 +1,152 @@
+// =============================================================================
+// AI Force CI pipeline (Java / Maven) -- modelled on the BVA pipeline.
+//
+// This is the "recipe" Jenkins follows. Each stage { } is one green circle you
+// saw in the BVA screenshot. Scope = CI ONLY (validate the code). The CD stages
+// BVA has (Create Bundle, Push to ACR, Publish to Nexus, Deploy to VM) are left
+// out on purpose and added later.
+//
+// HOW BVA MAPS TO THIS:
+//   BVA "Validate Source":  python3 -m compileall   (because BVA is Python)
+//   Here "Build & Package":  mvn clean package        (because this app is Java)
+//   That swap is the core adaptation. Everything else mirrors BVA.
+//
+// HOW TO USE:
+//   1. Jenkins -> New Item -> "Pipeline" -> name "AIForce-Validation".
+//   2. Best practice (like BVA): commit this file as "Jenkinsfile" in the
+//      generated repo, then in the job pick "Pipeline script from SCM".
+//      While learning, you can instead paste it into the inline script box.
+//   3. Fill in the tool names + credential IDs below (ask your colleague).
+//   4. "Build with Parameters" and watch the stages light up.
+// =============================================================================
+
+pipeline {
+    agent any
+
+    // Names must match Manage Jenkins -> Tools. Ask your colleague for the exact
+    // JDK 17 and Maven names configured on THIS Jenkins.
+    tools {
+        jdk   'jdk-17'
+        maven 'maven-3.9'
+    }
+
+    environment {
+        // SonarQube server you found in the BVA logs.
+        SONAR_HOST_URL = 'http://10.134.55.32:8081'
+        SONAR_PROJECT_KEY = 'AIForce'
+    }
+
+    parameters {
+        string(name: 'REPO_URL', defaultValue: 'https://github.com/drawnzer09/apoBank-AIForce.git',
+               description: 'Git URL of the AI-Force-generated repo to validate')
+        string(name: 'BRANCH',   defaultValue: 'main', description: 'Branch to validate')
+    }
+
+    stages {
+
+        // --- Stage 1: Checkout ---
+        stage('Checkout') {
+            steps {
+                // We clone the repo EXPLICITLY (recipe lives in Jenkins as an inline
+                // "Pipeline script"). This is deliberately different from BVA, because
+                // the AI Force repo is machine-generated and may not contain a
+                // Jenkinsfile. 'github-aiforce' = a NEW credential you create for the
+                // drawnzer09 account (see setup notes). If the repo is PUBLIC, you can
+                // drop credentialsId entirely.
+                git branch: params.BRANCH, url: params.REPO_URL, credentialsId: 'github-aiforce'
+
+                // Alternative (BVA-style) if you instead commit this file into the repo
+                // and configure the job as "Pipeline script from SCM":
+                // checkout scm
+            }
+        }
+
+        // --- Stage 2: Build & Package (the Java equivalent of BVA's compileall) ---
+        // This is the client's core question: "does the generated code compile?"
+        // IMPORTANT: do NOT append "|| true" here. BVA does that in its validate step,
+        // which HIDES failures. Catching failures is the whole point of this pipeline,
+        // so let mvn fail the stage -> verdict FAILED.
+        stage('Build & Package') {
+            steps {
+                sh 'mvn -B -DskipTests clean package'   // Windows agent: use bat '...'
+            }
+        }
+
+        // --- Stage 3: Unit Tests ---
+        stage('Unit Tests') {
+            steps {
+                sh 'mvn -B test'
+            }
+            post {
+                always {
+                    junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
+                }
+            }
+        }
+
+        // --- Stage 4: SonarQube Analysis (you have access) ---
+        // NOTE: BVA runs the generic `sonar-scanner` CLI because it's Python.
+        // For a Java/Maven project the Maven Sonar goal is the correct tool --
+        // it understands the compiled classes automatically.
+        stage('SonarQube Analysis') {
+            steps {
+                // 'ccsoc-sonar-token' = the SHARED SonarQube token credential used by
+                // BVA. Reuse it (same Sonar server), no need to create your own.
+                withCredentials([string(credentialsId: 'ccsoc-sonar-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        mvn -B sonar:sonar \
+                          -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                          -Dsonar.host.url=${SONAR_HOST_URL} \
+                          -Dsonar.token=${SONAR_TOKEN}
+                    '''
+                }
+            }
+        }
+
+        // --- Stage 5 (OPTIONAL but valuable): Boot & Smoke Test ---
+        // Compiling is NOT the same as working. Your app compiled but failed to
+        // start (isfinite migration bug). This stage boots it against a throwaway
+        // Postgres and checks health. Enable once stages 1-4 are green.
+        // (Needs Docker on the Jenkins agent.)
+        /*
+        stage('Boot & Smoke Test') {
+            steps {
+                sh '''
+                    docker run -d --name pg-ci -e POSTGRES_DB=temperature \
+                        -e POSTGRES_USER=temperature -e POSTGRES_PASSWORD=temperature \
+                        -p 5432:5432 postgres:16-alpine
+                    sleep 10
+                    JAR=$(ls target/*-SNAPSHOT.jar | head -n1)
+                    SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/temperature \
+                    SPRING_DATASOURCE_USERNAME=temperature \
+                    SPRING_DATASOURCE_PASSWORD=temperature \
+                        java -jar "$JAR" > app.log 2>&1 &
+                    ok=0
+                    for i in $(seq 1 30); do
+                        if curl -sf http://localhost:8080/actuator/health | grep -q '"status":"UP"'; then ok=1; break; fi
+                        sleep 2
+                    done
+                    cat app.log
+                    docker rm -f pg-ci || true
+                    [ "$ok" = "1" ]
+                '''
+            }
+        }
+        */
+    }
+
+    // --- Verdict (like BVA "Post Actions") ---
+    post {
+        success { echo 'VERDICT: BUILD PASSED - the generated code is build-ready.' }
+        failure { echo 'VERDICT: BUILD FAILED - see the stage logs above for the reason.' }
+        always  { echo "Repo: ${params.REPO_URL}  Branch: ${params.BRANCH}" }
+    }
+}
+
+// =============================================================================
+// LATER (CD phase, mirroring the rest of BVA):
+//   - Create Release Bundle : git archive / mvn package artifact
+//   - Build & Push to ACR   : docker build + docker push ccsocreg.azurecr.io/...
+//   - Publish to Nexus      : mvn deploy  (Nexus is a Maven-friendly artifact store)
+//   - Deploy to App VM      : ssh + docker run on the target VM
+// =============================================================================
