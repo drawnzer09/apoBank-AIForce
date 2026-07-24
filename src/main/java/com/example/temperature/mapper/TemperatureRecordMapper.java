@@ -15,9 +15,7 @@ public class TemperatureRecordMapper {
     }
 
     public List<TemperatureRecordEntity> toEntities(List<TemperatureRecordRequest> requests) {
-        return requests.stream()
-                .map(this::toEntity)
-                .toList();
+        return requests.stream().map(this::toEntity).toList();
     }
 
     public TemperatureRecordResponse toResponse(TemperatureRecordEntity entity) {
@@ -25,8 +23,6 @@ public class TemperatureRecordMapper {
     }
 
     public List<TemperatureRecordResponse> toResponses(List<TemperatureRecordEntity> entities) {
-        return entities.stream()
-                .map(this::toResponse)
-                .toList();
+        return entities.stream().map(this::toResponse).toList();
     }
 }

@@ -18,6 +18,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,7 +26,6 @@ import java.util.List;
 public class TemperatureRecordService {
 
     private static final Logger log = LoggerFactory.getLogger(TemperatureRecordService.class);
-
     private static final int DEFAULT_LIMIT = 100;
     private static final int MAX_LIMIT = 1000;
     private static final int DEFAULT_OFFSET = 0;
@@ -44,10 +44,8 @@ public class TemperatureRecordService {
         log.info("Ingesting {} temperature records", request.records().size());
 
         try {
-            List<TemperatureRecordEntity> entities = mapper.toEntities(request.records());
-            List<TemperatureRecordEntity> savedEntities = repository.saveAll(entities);
+            List<TemperatureRecordEntity> savedEntities = repository.saveAll(mapper.toEntities(request.records()));
             repository.flush();
-
             List<TemperatureRecordResponse> records = mapper.toResponses(savedEntities);
             return new IngestTemperatureRecordsResponse(records.size(), records);
         } catch (DataAccessException ex) {
@@ -58,40 +56,37 @@ public class TemperatureRecordService {
 
     @Transactional(readOnly = true)
     public TemperatureRecordQueryResponse query(TemperatureRecordQuery query) {
-        NormalizedQuery normalizedQuery = normalizeAndValidate(query);
+        NormalizedQuery normalized = normalizeAndValidate(query);
 
         log.info(
                 "Querying temperature records from {} to {} with limit={}, offset={}, sortDirection={}",
-                normalizedQuery.startTimestamp(),
-                normalizedQuery.endTimestamp(),
-                normalizedQuery.limit(),
-                normalizedQuery.offset(),
-                normalizedQuery.sortDirection()
+                normalized.startTimestamp(),
+                normalized.endTimestamp(),
+                normalized.limit(),
+                normalized.offset(),
+                normalized.sortDirection()
         );
 
         try {
-            List<TemperatureRecordEntity> entities = "desc".equals(normalizedQuery.sortDirection())
+            List<TemperatureRecordEntity> entities = "desc".equals(normalized.sortDirection())
                     ? repository.findByMeasuredAtRangeOrderByMeasuredAtDesc(
-                    normalizedQuery.startTimestamp(),
-                    normalizedQuery.endTimestamp(),
-                    normalizedQuery.limit(),
-                    normalizedQuery.offset()
-            )
+                            normalized.startTimestamp(),
+                            normalized.endTimestamp(),
+                            normalized.limit(),
+                            normalized.offset()
+                    )
                     : repository.findByMeasuredAtRangeOrderByMeasuredAtAsc(
-                    normalizedQuery.startTimestamp(),
-                    normalizedQuery.endTimestamp(),
-                    normalizedQuery.limit(),
-                    normalizedQuery.offset()
-            );
+                            normalized.startTimestamp(),
+                            normalized.endTimestamp(),
+                            normalized.limit(),
+                            normalized.offset()
+                    );
 
             List<TemperatureRecordResponse> items = mapper.toResponses(entities);
-            PageMetadataResponse page = new PageMetadataResponse(
-                    normalizedQuery.limit(),
-                    normalizedQuery.offset(),
-                    items.size()
+            return new TemperatureRecordQueryResponse(
+                    items,
+                    new PageMetadataResponse(normalized.limit(), normalized.offset(), items.size())
             );
-
-            return new TemperatureRecordQueryResponse(items, page);
         } catch (DataAccessException ex) {
             log.error("Failed to query temperature records", ex);
             throw new StorageUnavailableException("Temperature records could not be queried", ex);
@@ -104,11 +99,9 @@ public class TemperatureRecordService {
         if (query.startTimestamp() == null) {
             details.add(new ErrorDetailResponse("startTimestamp", "startTimestamp is required"));
         }
-
         if (query.endTimestamp() == null) {
             details.add(new ErrorDetailResponse("endTimestamp", "endTimestamp is required"));
         }
-
         if (query.startTimestamp() != null
                 && query.endTimestamp() != null
                 && query.endTimestamp().isBefore(query.startTimestamp())) {
@@ -140,18 +133,12 @@ public class TemperatureRecordService {
             throw new InvalidQueryParameterException("Invalid query parameters", details);
         }
 
-        return new NormalizedQuery(
-                query.startTimestamp(),
-                query.endTimestamp(),
-                limit,
-                offset,
-                sortDirection
-        );
+        return new NormalizedQuery(query.startTimestamp(), query.endTimestamp(), limit, offset, sortDirection);
     }
 
     private record NormalizedQuery(
-            java.time.OffsetDateTime startTimestamp,
-            java.time.OffsetDateTime endTimestamp,
+            OffsetDateTime startTimestamp,
+            OffsetDateTime endTimestamp,
             int limit,
             int offset,
             String sortDirection

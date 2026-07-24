@@ -10,16 +10,13 @@ import java.util.List;
 
 public interface TemperatureRecordRepository extends JpaRepository<TemperatureRecordEntity, Long> {
 
-    @Query(
-            value = """
-                    SELECT id, measured_at, temperature
-                    FROM temperature_records
-                    WHERE measured_at BETWEEN :startTimestamp AND :endTimestamp
-                    ORDER BY measured_at ASC
-                    LIMIT :limit OFFSET :offset
-                    """,
-            nativeQuery = true
-    )
+    @Query(value = """
+            SELECT id, measured_at, temperature
+            FROM temperature_records
+            WHERE measured_at BETWEEN :startTimestamp AND :endTimestamp
+            ORDER BY measured_at ASC
+            LIMIT :limit OFFSET :offset
+            """, nativeQuery = true)
     List<TemperatureRecordEntity> findByMeasuredAtRangeOrderByMeasuredAtAsc(
             @Param("startTimestamp") OffsetDateTime startTimestamp,
             @Param("endTimestamp") OffsetDateTime endTimestamp,
@@ -27,16 +24,13 @@ public interface TemperatureRecordRepository extends JpaRepository<TemperatureRe
             @Param("offset") int offset
     );
 
-    @Query(
-            value = """
-                    SELECT id, measured_at, temperature
-                    FROM temperature_records
-                    WHERE measured_at BETWEEN :startTimestamp AND :endTimestamp
-                    ORDER BY measured_at DESC
-                    LIMIT :limit OFFSET :offset
-                    """,
-            nativeQuery = true
-    )
+    @Query(value = """
+            SELECT id, measured_at, temperature
+            FROM temperature_records
+            WHERE measured_at BETWEEN :startTimestamp AND :endTimestamp
+            ORDER BY measured_at DESC
+            LIMIT :limit OFFSET :offset
+            """, nativeQuery = true)
     List<TemperatureRecordEntity> findByMeasuredAtRangeOrderByMeasuredAtDesc(
             @Param("startTimestamp") OffsetDateTime startTimestamp,
             @Param("endTimestamp") OffsetDateTime endTimestamp,

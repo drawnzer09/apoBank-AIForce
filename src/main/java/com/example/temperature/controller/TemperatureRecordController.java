@@ -35,38 +35,23 @@ public class TemperatureRecordController {
     public ResponseEntity<IngestTemperatureRecordsResponse> ingest(
             @Valid @RequestBody IngestTemperatureRecordsRequest request
     ) {
-        return ResponseEntity
-                .status(HttpStatus.CREATED)
-                .body(service.ingest(request));
+        return ResponseEntity.status(HttpStatus.CREATED).body(service.ingest(request));
     }
 
     @GetMapping
     public ResponseEntity<TemperatureRecordQueryResponse> query(
-            @RequestParam
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
-            OffsetDateTime startTimestamp,
-
-            @RequestParam
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
-            OffsetDateTime endTimestamp,
-
-            @RequestParam(required = false)
-            Integer limit,
-
-            @RequestParam(required = false)
-            Integer offset,
-
-            @RequestParam(required = false)
-            String sortDirection
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime startTimestamp,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime endTimestamp,
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) Integer offset,
+            @RequestParam(required = false) String sortDirection
     ) {
-        TemperatureRecordQuery query = new TemperatureRecordQuery(
+        return ResponseEntity.ok(service.query(new TemperatureRecordQuery(
                 startTimestamp,
                 endTimestamp,
                 limit,
                 offset,
                 sortDirection
-        );
-
-        return ResponseEntity.ok(service.query(query));
+        )));
     }
 }
