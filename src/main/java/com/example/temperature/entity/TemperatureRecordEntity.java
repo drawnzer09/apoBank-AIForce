@@ -18,20 +18,17 @@ public class TemperatureRecordEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "measurement_timestamp", nullable = false)
-    private OffsetDateTime measurementTimestamp;
+    @Column(name = "measured_at", nullable = false, columnDefinition = "TIMESTAMP WITH TIME ZONE")
+    private OffsetDateTime measuredAt;
 
-    @Column(name = "temperature", nullable = false)
+    @Column(name = "temperature", nullable = false, precision = 38, scale = 10)
     private BigDecimal temperature;
-
-    @Column(name = "ingested_at", nullable = false, insertable = false, updatable = false)
-    private OffsetDateTime ingestedAt;
 
     protected TemperatureRecordEntity() {
     }
 
-    public TemperatureRecordEntity(OffsetDateTime measurementTimestamp, BigDecimal temperature) {
-        this.measurementTimestamp = measurementTimestamp;
+    public TemperatureRecordEntity(OffsetDateTime measuredAt, BigDecimal temperature) {
+        this.measuredAt = measuredAt;
         this.temperature = temperature;
     }
 
@@ -39,12 +36,12 @@ public class TemperatureRecordEntity {
         return id;
     }
 
-    public OffsetDateTime getMeasurementTimestamp() {
-        return measurementTimestamp;
+    public OffsetDateTime getMeasuredAt() {
+        return measuredAt;
     }
 
-    public void setMeasurementTimestamp(OffsetDateTime measurementTimestamp) {
-        this.measurementTimestamp = measurementTimestamp;
+    public void setMeasuredAt(OffsetDateTime measuredAt) {
+        this.measuredAt = measuredAt;
     }
 
     public BigDecimal getTemperature() {
@@ -53,9 +50,5 @@ public class TemperatureRecordEntity {
 
     public void setTemperature(BigDecimal temperature) {
         this.temperature = temperature;
-    }
-
-    public OffsetDateTime getIngestedAt() {
-        return ingestedAt;
     }
 }

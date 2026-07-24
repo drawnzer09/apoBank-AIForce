@@ -1,36 +1,35 @@
 package com.example.temperature.service;
 
-import com.example.temperature.dto.request.TemperatureBatchRequest;
-import com.example.temperature.dto.response.PaginationResponse;
-import com.example.temperature.dto.response.TemperatureBatchResponse;
-import com.example.temperature.dto.response.TemperatureQueryResponse;
+import com.example.temperature.dto.query.TemperatureRecordQuery;
+import com.example.temperature.dto.request.IngestTemperatureRecordsRequest;
+import com.example.temperature.dto.response.ErrorDetailResponse;
+import com.example.temperature.dto.response.IngestTemperatureRecordsResponse;
+import com.example.temperature.dto.response.PageMetadataResponse;
+import com.example.temperature.dto.response.TemperatureRecordQueryResponse;
 import com.example.temperature.dto.response.TemperatureRecordResponse;
 import com.example.temperature.entity.TemperatureRecordEntity;
 import com.example.temperature.exception.InvalidQueryParameterException;
-import com.example.temperature.exception.PersistenceUnavailableException;
+import com.example.temperature.exception.StorageUnavailableException;
 import com.example.temperature.mapper.TemperatureRecordMapper;
 import com.example.temperature.repository.TemperatureRecordRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @Service
 public class TemperatureRecordService {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(TemperatureRecordService.class);
-    private static final int DEFAULT_PAGE = 1;
-    private static final int DEFAULT_PAGE_SIZE = 100;
-    private static final int MAX_PAGE_SIZE = 1000;
-    private static final String SORT_ASC = "timestamp";
-    private static final String SORT_DESC = "-timestamp";
+    private static final Logger log = LoggerFactory.getLogger(TemperatureRecordService.class);
+
+    private static final int DEFAULT_LIMIT = 100;
+    private static final int MAX_LIMIT = 1000;
+    private static final int DEFAULT_OFFSET = 0;
+    private static final String DEFAULT_SORT_DIRECTION = "asc";
 
     private final TemperatureRecordRepository repository;
     private final TemperatureRecordMapper mapper;
@@ -41,113 +40,121 @@ public class TemperatureRecordService {
     }
 
     @Transactional
-    public TemperatureBatchResponse ingest(TemperatureBatchRequest request) {
-        try {
-            List<TemperatureRecordEntity> entities = request.getRecords()
-                    .stream()
-                    .map(mapper::toEntity)
-                    .toList();
+    public IngestTemperatureRecordsResponse ingest(IngestTemperatureRecordsRequest request) {
+        log.info("Ingesting {} temperature records", request.records().size());
 
-            repository.saveAll(entities);
+        try {
+            List<TemperatureRecordEntity> entities = mapper.toEntities(request.records());
+            List<TemperatureRecordEntity> savedEntities = repository.saveAll(entities);
             repository.flush();
 
-            LOGGER.info("Persisted {} temperature records", entities.size());
-            return new TemperatureBatchResponse(entities.size());
+            List<TemperatureRecordResponse> records = mapper.toResponses(savedEntities);
+            return new IngestTemperatureRecordsResponse(records.size(), records);
         } catch (DataAccessException ex) {
-            LOGGER.error("Failed to persist temperature records", ex);
-            throw new PersistenceUnavailableException("Persistence layer is unavailable", ex);
+            log.error("Failed to persist temperature records", ex);
+            throw new StorageUnavailableException("Temperature records could not be persisted", ex);
         }
     }
 
     @Transactional(readOnly = true)
-    public TemperatureQueryResponse query(
-            OffsetDateTime from,
-            OffsetDateTime to,
-            Integer page,
-            Integer pageSize,
-            String sort
-    ) {
-        validateRange(from, to);
+    public TemperatureRecordQueryResponse query(TemperatureRecordQuery query) {
+        NormalizedQuery normalizedQuery = normalizeAndValidate(query);
 
-        int normalizedPage = normalizePage(page);
-        int normalizedPageSize = normalizePageSize(pageSize);
-        Sort.Direction direction = normalizeSort(sort);
-
-        PageRequest pageRequest = PageRequest.of(
-                normalizedPage - 1,
-                normalizedPageSize,
-                Sort.by(direction, "measurementTimestamp").and(Sort.by(direction, "id"))
+        log.info(
+                "Querying temperature records from {} to {} with limit={}, offset={}, sortDirection={}",
+                normalizedQuery.startTimestamp(),
+                normalizedQuery.endTimestamp(),
+                normalizedQuery.limit(),
+                normalizedQuery.offset(),
+                normalizedQuery.sortDirection()
         );
 
         try {
-            Page<TemperatureRecordEntity> resultPage =
-                    repository.findByOptionalMeasurementTimestampRange(from, to, pageRequest);
-
-            List<TemperatureRecordResponse> records = resultPage.getContent()
-                    .stream()
-                    .map(mapper::toResponse)
-                    .toList();
-
-            PaginationResponse pagination = new PaginationResponse(
-                    normalizedPage,
-                    normalizedPageSize,
-                    records.size(),
-                    resultPage.hasNext()
+            List<TemperatureRecordEntity> entities = "desc".equals(normalizedQuery.sortDirection())
+                    ? repository.findByMeasuredAtRangeOrderByMeasuredAtDesc(
+                    normalizedQuery.startTimestamp(),
+                    normalizedQuery.endTimestamp(),
+                    normalizedQuery.limit(),
+                    normalizedQuery.offset()
+            )
+                    : repository.findByMeasuredAtRangeOrderByMeasuredAtAsc(
+                    normalizedQuery.startTimestamp(),
+                    normalizedQuery.endTimestamp(),
+                    normalizedQuery.limit(),
+                    normalizedQuery.offset()
             );
 
-            LOGGER.info(
-                    "Queried temperature records from={} to={} page={} pageSize={} sort={} returnedCount={}",
-                    from,
-                    to,
-                    normalizedPage,
-                    normalizedPageSize,
-                    sort == null ? SORT_ASC : sort,
-                    records.size()
+            List<TemperatureRecordResponse> items = mapper.toResponses(entities);
+            PageMetadataResponse page = new PageMetadataResponse(
+                    normalizedQuery.limit(),
+                    normalizedQuery.offset(),
+                    items.size()
             );
 
-            return new TemperatureQueryResponse(records, pagination);
+            return new TemperatureRecordQueryResponse(items, page);
         } catch (DataAccessException ex) {
-            LOGGER.error("Failed to query temperature records", ex);
-            throw new PersistenceUnavailableException("Persistence layer is unavailable", ex);
+            log.error("Failed to query temperature records", ex);
+            throw new StorageUnavailableException("Temperature records could not be queried", ex);
         }
     }
 
-    private void validateRange(OffsetDateTime from, OffsetDateTime to) {
-        if (from != null && to != null && from.isAfter(to)) {
-            throw new InvalidQueryParameterException("from", "from must be earlier than or equal to to");
+    private NormalizedQuery normalizeAndValidate(TemperatureRecordQuery query) {
+        List<ErrorDetailResponse> details = new ArrayList<>();
+
+        if (query.startTimestamp() == null) {
+            details.add(new ErrorDetailResponse("startTimestamp", "startTimestamp is required"));
         }
+
+        if (query.endTimestamp() == null) {
+            details.add(new ErrorDetailResponse("endTimestamp", "endTimestamp is required"));
+        }
+
+        if (query.startTimestamp() != null
+                && query.endTimestamp() != null
+                && query.endTimestamp().isBefore(query.startTimestamp())) {
+            details.add(new ErrorDetailResponse(
+                    "endTimestamp",
+                    "endTimestamp must be greater than or equal to startTimestamp"
+            ));
+        }
+
+        int limit = query.limit() == null ? DEFAULT_LIMIT : query.limit();
+        if (limit < 1 || limit > MAX_LIMIT) {
+            details.add(new ErrorDetailResponse("limit", "limit must be between 1 and 1000"));
+        }
+
+        int offset = query.offset() == null ? DEFAULT_OFFSET : query.offset();
+        if (offset < 0) {
+            details.add(new ErrorDetailResponse("offset", "offset must be greater than or equal to 0"));
+        }
+
+        String sortDirection = query.sortDirection() == null || query.sortDirection().isBlank()
+                ? DEFAULT_SORT_DIRECTION
+                : query.sortDirection().trim().toLowerCase();
+
+        if (!"asc".equals(sortDirection) && !"desc".equals(sortDirection)) {
+            details.add(new ErrorDetailResponse("sortDirection", "sortDirection must be either asc or desc"));
+        }
+
+        if (!details.isEmpty()) {
+            throw new InvalidQueryParameterException("Invalid query parameters", details);
+        }
+
+        return new NormalizedQuery(
+                query.startTimestamp(),
+                query.endTimestamp(),
+                limit,
+                offset,
+                sortDirection
+        );
     }
 
-    private int normalizePage(Integer page) {
-        if (page == null) {
-            return DEFAULT_PAGE;
-        }
-        if (page < 1) {
-            throw new InvalidQueryParameterException("page", "page must be greater than or equal to 1");
-        }
-        return page;
-    }
-
-    private int normalizePageSize(Integer pageSize) {
-        if (pageSize == null) {
-            return DEFAULT_PAGE_SIZE;
-        }
-        if (pageSize < 1) {
-            throw new InvalidQueryParameterException("pageSize", "pageSize must be greater than or equal to 1");
-        }
-        if (pageSize > MAX_PAGE_SIZE) {
-            throw new InvalidQueryParameterException("pageSize", "pageSize must be less than or equal to 1000");
-        }
-        return pageSize;
-    }
-
-    private Sort.Direction normalizeSort(String sort) {
-        if (sort == null || sort.isBlank() || SORT_ASC.equals(sort)) {
-            return Sort.Direction.ASC;
-        }
-        if (SORT_DESC.equals(sort)) {
-            return Sort.Direction.DESC;
-        }
-        throw new InvalidQueryParameterException("sort", "sort must be one of: timestamp, -timestamp");
+    private record NormalizedQuery(
+            java.time.OffsetDateTime startTimestamp,
+            java.time.OffsetDateTime endTimestamp,
+            int limit,
+            int offset,
+            String sortDirection
+    ) {
     }
 }

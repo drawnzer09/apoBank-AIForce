@@ -1,16 +1,19 @@
 package com.example.temperature.exception;
 
-import com.example.temperature.dto.error.ErrorBody;
-import com.example.temperature.dto.error.ErrorDetail;
-import com.example.temperature.dto.error.ErrorEnvelope;
-import jakarta.servlet.http.HttpServletRequest;
+import com.example.temperature.dto.response.ErrorDetailResponse;
+import com.example.temperature.dto.response.ErrorResponse;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.convert.ConversionFailedException;
+import org.springframework.dao.DataAccessException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -20,134 +23,303 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
-import java.util.UUID;
 
 @RestControllerAdvice
-public class GlobalExceptionHandler {
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
-    private static final String REQUEST_ID_HEADER = "X-Request-Id";
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ErrorEnvelope> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
-        List<ErrorDetail> details = new ArrayList<>();
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException ex,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request
+    ) {
+        List<ErrorDetailResponse> details = ex.getBindingResult()
+                .getFieldErrors()
+                .stream()
+                .map(fieldError -> new ErrorDetailResponse(fieldError.getField(), fieldError.getDefaultMessage()))
+                .toList();
 
-        ex.getBindingResult().getFieldErrors().forEach(error ->
-                details.add(new ErrorDetail(error.getField(), error.getDefaultMessage()))
+        boolean payloadTooLarge = ex.getBindingResult()
+                .getFieldErrors()
+                .stream()
+                .anyMatch(this::isRecordsMaxSizeViolation);
+
+        if (payloadTooLarge) {
+            log.warn("Payload too large: {}", details);
+            return build(
+                    HttpStatus.PAYLOAD_TOO_LARGE,
+                    "PAYLOAD_TOO_LARGE",
+                    "Ingest request contains more than 1,000 records",
+                    details
+            );
+        }
+
+        log.warn("Request validation failed: {}", details);
+        return build(
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                "VALIDATION_ERROR",
+                "Request validation failed",
+                details
+        );
+    }
+
+    @Override
+    protected ResponseEntity<Object> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request
+    ) {
+        UnrecognizedPropertyException unrecognizedPropertyException = findCause(
+                ex,
+                UnrecognizedPropertyException.class
         );
 
-        ex.getBindingResult().getGlobalErrors().forEach(error ->
-                details.add(new ErrorDetail(error.getObjectName(), error.getDefaultMessage()))
+        if (unrecognizedPropertyException != null) {
+            String fieldName = unrecognizedPropertyException.getPropertyName();
+            List<ErrorDetailResponse> details = List.of(
+                    new ErrorDetailResponse(fieldName, "Unknown field is not allowed")
+            );
+
+            log.warn("Unknown JSON field rejected: {}", fieldName);
+            return build(
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    "VALIDATION_ERROR",
+                    "Request validation failed",
+                    details
+            );
+        }
+
+        log.warn("Malformed or unreadable request body", ex);
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "BAD_REQUEST",
+                "Malformed or invalid JSON request body",
+                List.of()
+        );
+    }
+
+    @Override
+    protected ResponseEntity<Object> handleMissingServletRequestParameter(
+            MissingServletRequestParameterException ex,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request
+    ) {
+        List<ErrorDetailResponse> details = List.of(
+                new ErrorDetailResponse(ex.getParameterName(), ex.getParameterName() + " is required")
         );
 
-        LOGGER.warn("Request validation failed: {}", details);
-        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Request validation failed", details, request);
+        log.warn("Missing request parameter: {}", ex.getParameterName());
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "BAD_REQUEST",
+                "Missing required query parameter",
+                details
+        );
     }
 
-    @ExceptionHandler(InvalidQueryParameterException.class)
-    public ResponseEntity<ErrorEnvelope> handleInvalidQueryParameter(
-            InvalidQueryParameterException ex,
-            HttpServletRequest request
-    ) {
-        List<ErrorDetail> details = List.of(new ErrorDetail(ex.getField(), ex.getDetailMessage()));
-        LOGGER.warn("Invalid query parameter {}: {}", ex.getField(), ex.getDetailMessage());
-        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Invalid query parameter", details, request);
-    }
-
-    @ExceptionHandler({
-            HttpMessageNotReadableException.class,
-            MethodArgumentTypeMismatchException.class,
-            MissingServletRequestParameterException.class,
-            ConstraintViolationException.class,
-            ConversionFailedException.class
-    })
-    public ResponseEntity<ErrorEnvelope> handleBadRequest(Exception ex, HttpServletRequest request) {
-        LOGGER.warn("Bad request", ex);
-        List<ErrorDetail> details = List.of(new ErrorDetail(null, ex.getMessage()));
-        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Bad request", details, request);
-    }
-
-    @ExceptionHandler(NoHandlerFoundException.class)
-    public ResponseEntity<ErrorEnvelope> handleNoHandlerFound(NoHandlerFoundException ex, HttpServletRequest request) {
-        List<ErrorDetail> details = List.of(new ErrorDetail("path", ex.getRequestURL()));
-        return build(HttpStatus.NOT_FOUND, "NOT_FOUND", "Requested path was not found", details, request);
-    }
-
-    @ExceptionHandler(NoResourceFoundException.class)
-    public ResponseEntity<ErrorEnvelope> handleNoResourceFound(NoResourceFoundException ex, HttpServletRequest request) {
-        List<ErrorDetail> details = List.of(new ErrorDetail("path", ex.getResourcePath()));
-        return build(HttpStatus.NOT_FOUND, "NOT_FOUND", "Requested path was not found", details, request);
-    }
-
-    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
-    public ResponseEntity<ErrorEnvelope> handleMethodNotAllowed(
-            HttpRequestMethodNotSupportedException ex,
-            HttpServletRequest request
-    ) {
-        List<ErrorDetail> details = List.of(new ErrorDetail("method", ex.getMethod()));
-        return build(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "Method not allowed", details, request);
-    }
-
-    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
-    public ResponseEntity<ErrorEnvelope> handleUnsupportedMediaType(
+    @Override
+    protected ResponseEntity<Object> handleHttpMediaTypeNotSupported(
             HttpMediaTypeNotSupportedException ex,
-            HttpServletRequest request
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request
     ) {
-        List<ErrorDetail> details = List.of(new ErrorDetail("contentType", String.valueOf(ex.getContentType())));
+        log.warn("Unsupported media type: {}", ex.getContentType());
         return build(
                 HttpStatus.UNSUPPORTED_MEDIA_TYPE,
                 "UNSUPPORTED_MEDIA_TYPE",
                 "Unsupported media type",
-                details,
-                request
+                List.of()
         );
     }
 
-    @ExceptionHandler(PersistenceUnavailableException.class)
-    public ResponseEntity<ErrorEnvelope> handlePersistenceUnavailable(
-            PersistenceUnavailableException ex,
-            HttpServletRequest request
+    @Override
+    protected ResponseEntity<Object> handleHttpRequestMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request
     ) {
-        LOGGER.error("Persistence unavailable", ex);
+        log.warn("Method not allowed: {}", ex.getMethod());
+        return build(
+                HttpStatus.METHOD_NOT_ALLOWED,
+                "METHOD_NOT_ALLOWED",
+                "HTTP method is not allowed for this endpoint",
+                List.of()
+        );
+    }
+
+    @Override
+    protected ResponseEntity<Object> handleNoHandlerFoundException(
+            NoHandlerFoundException ex,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request
+    ) {
+        log.warn("API path not found: {}", ex.getRequestURL());
+        return build(
+                HttpStatus.NOT_FOUND,
+                "NOT_FOUND",
+                "API path does not exist",
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Object> handleNoResourceFound(NoResourceFoundException ex) {
+        log.warn("Resource not found: {}", ex.getResourcePath());
+        return build(
+                HttpStatus.NOT_FOUND,
+                "NOT_FOUND",
+                "API path does not exist",
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Object> handleMethodArgumentTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        String field = ex.getName();
+        List<ErrorDetailResponse> details = List.of(
+                new ErrorDetailResponse(field, field + " has an invalid value")
+        );
+
+        log.warn("Query parameter type mismatch: {}", field);
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "BAD_REQUEST",
+                "Invalid query parameter",
+                details
+        );
+    }
+
+    @ExceptionHandler(ConversionFailedException.class)
+    public ResponseEntity<Object> handleConversionFailed(ConversionFailedException ex) {
+        log.warn("Request parameter conversion failed", ex);
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "BAD_REQUEST",
+                "Invalid query parameter",
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<Object> handleConstraintViolation(ConstraintViolationException ex) {
+        List<ErrorDetailResponse> details = ex.getConstraintViolations()
+                .stream()
+                .map(violation -> new ErrorDetailResponse(
+                        violation.getPropertyPath().toString(),
+                        violation.getMessage()
+                ))
+                .toList();
+
+        log.warn("Constraint violation: {}", details);
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "BAD_REQUEST",
+                "Invalid request parameters",
+                details
+        );
+    }
+
+    @ExceptionHandler(InvalidQueryParameterException.class)
+    public ResponseEntity<Object> handleInvalidQueryParameter(InvalidQueryParameterException ex) {
+        log.warn("Invalid query parameters: {}", ex.getDetails());
+        return build(
+                HttpStatus.BAD_REQUEST,
+                "BAD_REQUEST",
+                ex.getMessage(),
+                ex.getDetails()
+        );
+    }
+
+    @ExceptionHandler(StorageUnavailableException.class)
+    public ResponseEntity<Object> handleStorageUnavailable(StorageUnavailableException ex) {
+        log.error("Storage unavailable", ex);
         return build(
                 HttpStatus.SERVICE_UNAVAILABLE,
                 "SERVICE_UNAVAILABLE",
-                "Persistence or required runtime dependency is unavailable",
-                List.of(),
-                request
+                "Storage is temporarily unavailable",
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(DataAccessException.class)
+    public ResponseEntity<Object> handleDataAccess(DataAccessException ex) {
+        log.error("Database access failure", ex);
+        return build(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                "Storage is temporarily unavailable",
+                List.of()
         );
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorEnvelope> handleUnexpected(Exception ex, HttpServletRequest request) {
-        LOGGER.error("Unexpected service error", ex);
+    public ResponseEntity<Object> handleUnexpected(Exception ex) {
+        log.error("Unexpected server error", ex);
         return build(
                 HttpStatus.INTERNAL_SERVER_ERROR,
                 "INTERNAL_SERVER_ERROR",
-                "An unexpected service error occurred",
-                List.of(),
-                request
+                "Unexpected server error",
+                List.of()
         );
     }
 
-    private ResponseEntity<ErrorEnvelope> build(
+    private boolean isRecordsMaxSizeViolation(FieldError fieldError) {
+        Object rejectedValue = fieldError.getRejectedValue();
+        if (!"records".equals(fieldError.getField()) || !(rejectedValue instanceof Collection<?> collection)) {
+            return false;
+        }
+
+        String[] codes = fieldError.getCodes();
+        boolean sizeViolation = false;
+        if (codes != null) {
+            for (String code : codes) {
+                if (code != null && code.contains("Size")) {
+                    sizeViolation = true;
+                    break;
+                }
+            }
+        }
+
+        return sizeViolation && collection.size() > 1000;
+    }
+
+    private ResponseEntity<Object> build(
             HttpStatus status,
             String code,
             String message,
-            List<ErrorDetail> details,
-            HttpServletRequest request
+            List<ErrorDetailResponse> details
     ) {
-        String requestId = request.getHeader(REQUEST_ID_HEADER);
-        if (requestId == null || requestId.isBlank()) {
-            requestId = UUID.randomUUID().toString();
+        ErrorResponse response = ErrorResponse.of(code, message, details);
+        return ResponseEntity.status(status).body(response);
+    }
+
+    private <T extends Throwable> T findCause(Throwable throwable, Class<T> causeType) {
+        List<Throwable> visited = new ArrayList<>();
+        Throwable current = throwable;
+
+        while (current != null && !visited.contains(current)) {
+            if (causeType.isInstance(current)) {
+                return causeType.cast(current);
+            }
+
+            visited.add(current);
+            current = current.getCause();
         }
 
-        ErrorBody body = new ErrorBody(code, message, details, requestId);
-        return ResponseEntity.status(status)
-                .header(REQUEST_ID_HEADER, requestId)
-                .body(new ErrorEnvelope(body));
+        return null;
     }
 }
